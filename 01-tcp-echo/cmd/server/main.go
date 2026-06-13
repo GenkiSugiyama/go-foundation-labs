@@ -21,14 +21,22 @@ func main() {
 
 	// クライアントからのリクエストがきたらその接続のコネクションを返す
 	// コネクションはクライアントとの実際の接続
-	// Accept()は1個のクライアントとの接続しか返さないので現状だと複数クライアントからの接続は処理できない
-	conn, err := listener.Accept()
-	if err != nil {
-		log.Fatal(err)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Println("accept error:", err)
+			continue
+		}
+
+		go handleConn(conn)
 	}
+}
+
+func handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	log.Println("client connected:", conn.RemoteAddr())
+	defer log.Println("client disconnected:", conn.RemoteAddr())
 
 	// クライアントからのリクエストを読み取るためのスキャナーを作成する
 	// クライアントとのコネクションをReaderとしてスキャナーに渡すことで、クライアントからのリクエストを読み取ることができる
@@ -47,6 +55,4 @@ func main() {
 	if err := scanner.Err(); err != nil {
 		log.Println("read error:", err)
 	}
-
-	log.Println("client disconnected")
 }
