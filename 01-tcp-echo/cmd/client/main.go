@@ -6,30 +6,50 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 )
 
 func main() {
 	// net.Dial()は指定されたプロトコルで指定されたアドレスに接続するための関数
-	conn, err := net.Dial("tcp", "localhost:8080")
+	conn, err := net.DialTimeout("tcp", "localhost:8080", 3*time.Second)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
 
-	// サーバーへのコネクションをWriterとしてFprintln()に渡すことでサーバーにテキストを送信する
-	fmt.Fprintln(conn, "Hello from go client")
+	stdin := bufio.NewScanner(os.Stdin)
+	server := bufio.NewScanner(conn)
 
-	// コネクションをReaderとしてスキャナーに渡すことで、サーバーからのレスポンスを読み取ることができる
-	scanner := bufio.NewScanner(conn)
-	// サーバーはクライアントからのリクエストを読み取ってそのテキストをそのままクライアントに返している
-	// クライアントはサーバーからのレスポンスを読み取ったらそれを表示して終了する
-	if scanner.Scan() {
-		fmt.Println("response:", scanner.Text())
+	for {
+		fmt.Print("> ")
+
+		// stdin.Scan()は標準入力からの入力を読み取るための関数
+		// 入力があるとtrueを返し、入力がない場合やエラーが発生した場合はfalseを返す
+		if !stdin.Scan() {
+			break
+		}
+
+		text := stdin.Text()
+		// "exit"と入力されたらループを抜ける
+		if text == "exit" {
+			break
+		}
+
+		fmt.Fprintln(conn, text)
+
+		// server.Scan()はサーバーからの応答を読み取るための関数
+		// サーバーからの応答があるとtrueを返し、サーバーが接続を閉じた場合やエラーが発生した場合はfalseを返す
+		if server.Scan() {
+			fmt.Println("echo:", server.Text())
+		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		log.Println("read error:", err)
+	if err := stdin.Err(); err != nil {
+		log.Println("stdin error:", err)
 	}
 
-	os.Exit(0)
+	if err := server.Err(); err != nil {
+		log.Println("server error:", err)
+	}
 }
