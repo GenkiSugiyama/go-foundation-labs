@@ -1,10 +1,13 @@
 package main
 
 import (
-	"bufio"
-	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/GenkiSugiyama/go-foundation-labs/01-tcp-echo/internal/echo"
 )
 
 func main() {
@@ -19,17 +22,25 @@ func main() {
 
 	log.Println("tcp echo server is listening on :8080")
 
-	// クライアントからのリクエストがきたらその接続のコネクションを返す
-	// コネクションはクライアントとの実際の接続
-	// 複数クライアントからのリクエストを処理するためにAccept()をループで呼び出す
+	quit := make(chan os.Signal, 1)
+	// Ctrl + c が押下されるとプロセスにSIGINTが送られる
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		// signal.Notify()でSIGINTシグナルを受け取ると listenerClose()が発火する
+		<-quit
+		log.Println("shutting down server...")
+		listener.Close()
+	}()
+
 	for {
+		// listener.Close()が発火するとlistener.Accept()がエラーでもどりサーバーが終了する
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Println("accept error:", err)
-			continue
+			log.Println("accept stopped:", err)
+			return
 		}
 
-		// それぞれの接続をゴルーチンで処理することでメインループがブロックされるのを防ぐ
 		go handleConn(conn)
 	}
 }
@@ -40,22 +51,10 @@ func handleConn(conn net.Conn) {
 	log.Println("client connected:", conn.RemoteAddr())
 	defer log.Println("client disconnected:", conn.RemoteAddr())
 
-	// クライアントからのリクエストを読み取るためのスキャナーを作成する
-	// クライアントとのコネクションをReaderとしてスキャナーに渡すことで、クライアントからのリクエストを読み取ることができる
-	scanner := bufio.NewScanner(conn)
-	// Scan()でトークンごとにクライアントからのリクエストを読み取る
-	// クライアントからのテキストはtcp層では単なるバイトストリームなので、アプリケーション層でトークンの単位を決めてどこからどこまでを1つのメッセージ（リクエスト）とみなすかを定義する必要がある
-	// 明示的にトークンの単位を設定していないのでデフォルトの改行コードで区切られた行単位で読み取る
-	// Scan()は接続と閉じたときや読み取りエラー等が発生したときにfalseを返すのでループを抜ける
-	for scanner.Scan() {
-		// Scan()で読み取ったトークンを文字列として取得
-		text := scanner.Text()
-		// コネクションをWriterとしてFprintln()に渡すことでクライアントにテキストを送信する
-		fmt.Fprintln(conn, text)
-	}
+	err := echo.Handle(conn, conn)
 
 	// Scan()でエラーが発生した場合はErr()でエラーを取得することができる
-	if err := scanner.Err(); err != nil {
+	if err != nil {
 		log.Println("read error:", err)
 	}
 }

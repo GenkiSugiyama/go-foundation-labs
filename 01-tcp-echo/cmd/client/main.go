@@ -11,7 +11,7 @@ import (
 
 func main() {
 	// net.Dial()は指定されたプロトコルで指定されたアドレスに接続するための関数
-	conn, err := net.DialTimeout("tcp", "localhost:8080", 3*time.Second)
+	conn, err := net.DialTimeout("tcp", "local:8080", 3*time.Second)
 	if err != nil {
 		log.Fatal(err)
 	}
