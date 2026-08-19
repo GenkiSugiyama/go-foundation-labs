@@ -95,18 +95,16 @@ docker start go-labs-postgres
 接続確認をします。
 
 ```bash
-psql 'postgres://postgres:localpass@localhost:5432/tododb?sslmode=disable' \
-  -c 'SELECT version();'
+docker exec go-labs-postgres \
+  psql -U postgres -d tododb -c 'SELECT version();'
 ```
 
-`psql` が未導入なら、コンテナ内の `psql` でも確認できます。
+この README では、Mac に `psql` をインストールせず、PostgreSQL コンテナ内の `psql` を使います。
+別の SQL で接続を確認する例は次のとおりです。
 
 ```bash
-docker exec -it go-labs-postgres psql -U postgres -d tododb -c 'SELECT current_database();'
+docker exec go-labs-postgres psql -U postgres -d tododb -c 'SELECT current_database();'
 ```
-
-macOS では `psql` が未導入のことがあります。その場合は `brew install libpq` の後に PATH 設定が必要になることがあります。  
-Linux では `postgresql-client` パッケージ名になることがあります。
 
 クラウド DB、本番 DB、共有 DB は使わないでください。学習中に `DROP TABLE` や意図的な失敗を試すため、必ずローカルの使い捨て環境で行います。
 
@@ -133,13 +131,18 @@ CREATE INDEX IF NOT EXISTS todos_owner_done_idx
 適用します。
 
 ```bash
-psql 'postgres://postgres:localpass@localhost:5432/tododb?sslmode=disable' -f schema.sql
+docker exec -i go-labs-postgres \
+  psql -U postgres -d tododb < schema.sql
 ```
+
+`schema.sql` は Mac 上にあるため、標準入力を使ってコンテナ内の `psql` に渡しています。
+このように標準入力をリダイレクトする場合は、TTY を割り当てる `-t` を付けず、標準入力を開く `-i` だけを指定します。
 
 作成結果を確認します。
 
 ```bash
-psql 'postgres://postgres:localpass@localhost:5432/tododb?sslmode=disable' -c '\d todos'
+docker exec go-labs-postgres \
+  psql -U postgres -d tododb -c '\d todos'
 ```
 
 ここでは主に次を見ます。
@@ -380,7 +383,8 @@ func markDoneTx(ctx context.Context, db *sql.DB, id, ownerID int64) error {
 確認用の SQL 例です。
 
 ```bash
-psql 'postgres://postgres:localpass@localhost:5432/tododb?sslmode=disable' -c \
+docker exec go-labs-postgres \
+  psql -U postgres -d tododb -c \
   'SELECT id, title, done, owner_id FROM todos ORDER BY id;'
 ```
 
@@ -389,7 +393,8 @@ psql 'postgres://postgres:localpass@localhost:5432/tododb?sslmode=disable' -c \
 まずはテストデータを少し入れます。
 
 ```bash
-psql 'postgres://postgres:localpass@localhost:5432/tododb?sslmode=disable' -c "
+docker exec go-labs-postgres \
+  psql -U postgres -d tododb -c "
 INSERT INTO todos (title, done, owner_id)
 SELECT 'task-' || gs, (gs % 2 = 0), (gs % 5) + 1
 FROM generate_series(1, 1000) AS gs;
@@ -399,12 +404,14 @@ FROM generate_series(1, 1000) AS gs;
 実行計画を確認します。
 
 ```bash
-psql 'postgres://postgres:localpass@localhost:5432/tododb?sslmode=disable' -c \
+docker exec go-labs-postgres \
+  psql -U postgres -d tododb -c \
   'EXPLAIN SELECT id, title FROM todos WHERE owner_id = 1;'
 ```
 
 ```bash
-psql 'postgres://postgres:localpass@localhost:5432/tododb?sslmode=disable' -c \
+docker exec go-labs-postgres \
+  psql -U postgres -d tododb -c \
   'EXPLAIN SELECT id, title FROM todos WHERE owner_id = 1 AND done = false;'
 ```
 
