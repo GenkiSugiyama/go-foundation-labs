@@ -67,8 +67,10 @@ curl -i -X DELETE 'http://localhost:8080/todos/1?owner_id=1'
 │       └── main.go
 └── internal/
     └── todo/
-        ├── handler.go
-        └── repository.go
+        ├── handler/
+        │   └── todo_handler.go
+        └── repository/
+            └── todo_repository.go
 ```
 
 最初は `cmd/server/main.go` にまとめて書いても構いません。  
@@ -209,14 +211,14 @@ go run ./cmd/server
 
 ```go
 type Todo struct {
-	ID        int64
-	Title     string
-	Done      bool
-	OwnerID   int64
-	CreatedAt time.Time
+	ID        int64     `json:"id"`
+	Title     string    `json:"title"`
+	Done      bool      `json:"done"`
+	OwnerID   int64     `json:"owner_id"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
-func createTodo(ctx context.Context, db *sql.DB, title string, ownerID int64) (int64, error) {
+func CreateTodo(ctx context.Context, db *sql.DB, title string, ownerID int64) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx,
 		`INSERT INTO todos (title, owner_id)
@@ -227,7 +229,7 @@ func createTodo(ctx context.Context, db *sql.DB, title string, ownerID int64) (i
 	return id, err
 }
 
-func listTodos(ctx context.Context, db *sql.DB, ownerID int64) ([]Todo, error) {
+func ListTodos(ctx context.Context, db *sql.DB, ownerID int64) ([]Todo, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT id, title, done, owner_id, created_at
 		   FROM todos
@@ -256,7 +258,7 @@ func listTodos(ctx context.Context, db *sql.DB, ownerID int64) ([]Todo, error) {
 	return todos, nil
 }
 
-func updateTodoDone(ctx context.Context, db *sql.DB, id, ownerID int64, done bool) error {
+func UpdateTodoDone(ctx context.Context, db *sql.DB, id, ownerID int64, done bool) error {
 	result, err := db.ExecContext(ctx,
 		`UPDATE todos
 		    SET done = $1
@@ -278,7 +280,7 @@ func updateTodoDone(ctx context.Context, db *sql.DB, id, ownerID int64, done boo
 	return nil
 }
 
-func deleteTodo(ctx context.Context, db *sql.DB, id, ownerID int64) error {
+func DeleteTodo(ctx context.Context, db *sql.DB, id, ownerID int64) error {
 	result, err := db.ExecContext(ctx,
 		`DELETE FROM todos
 		  WHERE id = $1 AND owner_id = $2`,
@@ -300,17 +302,237 @@ func deleteTodo(ctx context.Context, db *sql.DB, id, ownerID int64) error {
 }
 ```
 
-ここで重要なのは、`owner_id` を条件に含めていることです。  
-これは単なる検索条件ではなく、他人の TODO を更新・削除させないための認可条件でもあります。
+ここで重要なのは、`owner_id` を条件に含めて更新・削除の対象を所有者ごとに絞っていることです。ただし、このStepのようにクライアントが送った `owner_id` をそのまま使うだけでは、本当の認可にはなりません。実務では認証済みユーザーの情報から `owner_id` を取得し、リクエストボディやクエリパラメーターの値を所有者情報として信用しないようにします。
+
+このコードを `internal/todo/repository/todo_repository.go` に置く場合は、パッケージ名を `repository` にします。次のStepで別パッケージのハンドラーから呼び出すため、関数名は先頭を大文字にして公開しています。
 
 ## Step 5: HTTP ハンドラーと DB 操作を接続する
 
-02-http-mini-api で作ったHTTPハンドラーのインメモリ処理を、このStepでDB関数へ置き換えます。
+02-http-mini-api で作ったHTTPハンドラーのインメモリ処理を、このStepでrepositoryの関数へ置き換えます。
 
-- `POST /todos`: JSONを検証し、`createTodo` を呼んで `201 Created` を返す
-- `GET /todos?owner_id=1`: `owner_id` を数値へ変換し、`listTodos` の結果をJSONで返す
-- `PATCH /todos/{id}`: パスの `id` と認証済みユーザーの `owner_id` を使って `updateTodoDone` を呼ぶ
-- `DELETE /todos/{id}`: `deleteTodo` を呼び、対象がなければ `404 Not Found` を返す
+- `POST /todos`: JSONを検証し、`repository.CreateTodo` を呼んで `201 Created` を返す
+- `GET /todos?owner_id=1`: `owner_id` を数値へ変換し、`repository.ListTodos` の結果をJSONで返す
+- `PATCH /todos/{id}`: パスの `id` とリクエストの `owner_id` を使って `repository.UpdateTodoDone` を呼ぶ
+- `DELETE /todos/{id}`: `repository.DeleteTodo` を呼び、対象がなければ `404 Not Found` を返す
+
+### ハンドラーを実装する
+
+`internal/todo/handler/todo_handler.go` を作成します。
+
+```go
+package handler
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/GenkiSugiyama/go-foundation-labs/05-todo-api/internal/todo/repository"
+)
+
+const dbTimeout = 3 * time.Second
+
+type Handler struct {
+	db *sql.DB
+}
+
+func New(db *sql.DB) *Handler {
+	return &Handler{db: db}
+}
+
+type createTodoRequest struct {
+	Title   string `json:"title"`
+	OwnerID int64  `json:"owner_id"`
+}
+
+type updateTodoRequest struct {
+	Done    *bool `json:"done"`
+	OwnerID int64 `json:"owner_id"`
+}
+
+type errorResponse struct {
+	Error string `json:"error"`
+}
+
+func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
+	var req createTodoRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	req.Title = strings.TrimSpace(req.Title)
+	if req.Title == "" || req.OwnerID <= 0 {
+		writeError(w, http.StatusBadRequest, "title and positive owner_id are required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	defer cancel()
+
+	id, err := repository.CreateTodo(ctx, h.db, req.Title, req.OwnerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create todo")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
+}
+
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	ownerID, err := positiveInt64(r.URL.Query().Get("owner_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "owner_id must be a positive integer")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	defer cancel()
+
+	todos, err := repository.ListTodos(ctx, h.db, ownerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list todos")
+		return
+	}
+	if todos == nil {
+		todos = []repository.Todo{}
+	}
+
+	writeJSON(w, http.StatusOK, todos)
+}
+
+func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := positiveInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "id must be a positive integer")
+		return
+	}
+
+	var req updateTodoRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Done == nil || req.OwnerID <= 0 {
+		writeError(w, http.StatusBadRequest, "done and positive owner_id are required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	defer cancel()
+
+	err = repository.UpdateTodoDone(ctx, h.db, id, req.OwnerID, *req.Done)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "todo not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update todo")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := positiveInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "id must be a positive integer")
+		return
+	}
+
+	ownerID, err := positiveInt64(r.URL.Query().Get("owner_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "owner_id must be a positive integer")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	defer cancel()
+
+	err = repository.DeleteTodo(ctx, h.db, id, ownerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "todo not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete todo")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func positiveInt64(value string) (int64, error) {
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, errors.New("value must be a positive integer")
+	}
+	return n, nil
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, errorResponse{Error: message})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+```
+
+`PATCH`の`done`を`*bool`にしているのは、`false`が指定された場合と、フィールド自体が省略された場合を区別するためです。また、repositoryから返されたDBエラーの内容はレスポンスへ直接出さず、クライアント向けの固定メッセージに変換します。
+
+### ルーティングを設定する
+
+`cmd/server/main.go` の接続確認後に、ハンドラーとルートを登録してHTTPサーバーを起動します。Go 1.22以降の`http.ServeMux`では、HTTPメソッドとパスを組み合わせたパターンと、`{id}`のようなパス変数を利用できます。
+
+```go
+todoHandler := handler.New(db)
+
+mux := http.NewServeMux()
+mux.HandleFunc("POST /todos", todoHandler.Create)
+mux.HandleFunc("GET /todos", todoHandler.List)
+mux.HandleFunc("PATCH /todos/{id}", todoHandler.Update)
+mux.HandleFunc("DELETE /todos/{id}", todoHandler.Delete)
+
+server := &http.Server{
+	Addr:              ":8080",
+	Handler:           mux,
+	ReadHeaderTimeout: 5 * time.Second,
+}
+
+log.Println("listening on http://localhost:8080")
+log.Fatal(server.ListenAndServe())
+```
+
+`main.go` のimportには次を追加します。
+
+```go
+import (
+	"net/http"
+
+	"github.com/GenkiSugiyama/go-foundation-labs/05-todo-api/internal/todo/handler"
+)
+```
+
+コードを配置したら、フォーマットとコンパイルを確認します。
+
+```bash
+go fmt ./...
+go test ./...
+go run ./cmd/server
+```
 
 各リクエストでは `context.WithTimeout` でDB処理に期限を設け、クライアント入力をそのままSQL文字列へ連結しないでください。実装後、完成イメージの `curl` を上から順に実行し、HTTPレスポンスとDBの行が一致することを確認します。
 
