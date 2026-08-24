@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,12 +15,19 @@ import (
 
 const dbTimeout = 3 * time.Second
 
-type Handler struct {
-	db *sql.DB
+type TodoRepository interface {
+	CreateTodo(ctx context.Context, title string, ownerID int64) (int64, error)
+	ListTodos(ctx context.Context, ownerID int64) ([]repository.Todo, error)
+	UpdateTodoDone(ctx context.Context, id, ownerID int64, done *bool) error
+	DeleteTodo(ctx context.Context, id, ownerID int64) error
 }
 
-func New(db *sql.DB) *Handler {
-	return &Handler{db: db}
+type Handler struct {
+	repository TodoRepository
+}
+
+func New(repository TodoRepository) *Handler {
+	return &Handler{repository: repository}
 }
 
 type createTodoRequest struct {
@@ -62,7 +70,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
-	id, err := repository.CreateTodo(ctx, h.db, req.Title, req.OwnerID)
+	id, err := h.repository.CreateTodo(ctx, req.Title, req.OwnerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError,
 			"failed to create todo")
@@ -72,7 +80,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
-func (h *handler) List(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	ownerId, err := positiveInt64(r.URL.Query().Get("owner_id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest,
@@ -83,7 +91,7 @@ func (h *handler) List(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
-	todos, err := repository.ListTodos(ctx, h.db, ownerId)
+	todos, err := h.repository.ListTodos(ctx, ownerId)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError,
 			"failed to list todos")
@@ -121,7 +129,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
-	err = repository.UpdateTodoDone(ctx, h.db, id, req.OwnerID, req.Done)
+	err = h.repository.UpdateTodoDone(ctx, id, req.OwnerID, req.Done)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound,
 			"todo not found")
@@ -150,4 +158,38 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 			"owner_id must bu a positive integer")
 		return
 	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	defer cancel()
+
+	err = h.repository.DeleteTodo(ctx, id, ownerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "todo not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete todo")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func positiveInt64(value string) (int64, error) {
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, errors.New("value must be a positive integer")
+	}
+	return n, nil
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, errorResponse{Error: message})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	// json.NewEncoder(w).Encode(value) でhttp.ResponseWriterに引数で受けたvalueをJSONストリームに変換したデータを書き込む
+	_ = json.NewEncoder(w).Encode(value)
 }

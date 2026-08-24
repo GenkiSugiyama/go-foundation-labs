@@ -14,11 +14,19 @@ type Todo struct {
 	CreatedAt time.Time
 }
 
-func CreateTodo(ctx context.Context, db *sql.DB, title string, ownerID int64) (int64, error) {
+type TodoRepository struct {
+	db *sql.DB
+}
+
+func New(db *sql.DB) *TodoRepository {
+	return &TodoRepository{db: db}
+}
+
+func (r *TodoRepository) CreateTodo(ctx context.Context, title string, ownerID int64) (int64, error) {
 	var id int64
 	// QueryRowContextは、1行だけ返すクエリを実行する
 	// 指定のINSERT文を実行し、RETURNING句で返されたidをScan()で取得する
-	err := db.QueryRowContext(ctx,
+	err := r.db.QueryRowContext(ctx,
 		`INSERT INTO todos (title, owner_id)
 		 VALUES($1, $2)
 		 RETURNING id`,
@@ -27,9 +35,9 @@ func CreateTodo(ctx context.Context, db *sql.DB, title string, ownerID int64) (i
 	return id, err
 }
 
-func ListTodos(ctx context.Context, db *sql.DB, ownerID int64) ([]Todo, error) {
+func (r *TodoRepository) ListTodos(ctx context.Context, ownerID int64) ([]Todo, error) {
 	// QueryContext はSELECTのようなクエリを実行し取得できた複数の行データを返す
-	rows, err := db.QueryContext(ctx,
+	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, title, done, owner_id, created_at
 		 FROM todos
 		 WHERE owner_id = $1
@@ -60,9 +68,9 @@ func ListTodos(ctx context.Context, db *sql.DB, ownerID int64) ([]Todo, error) {
 	return todos, err
 }
 
-func UpdateTodoDone(ctx context.Context, db *sql.DB, id, ownerID int64, done *bool) error {
+func (r *TodoRepository) UpdateTodoDone(ctx context.Context, id, ownerID int64, done *bool) error {
 	// ExecContextは、SQLの結果行を返さず、実行結果の概要をsql.Resultとして返す。
-	result, err := db.ExecContext(ctx,
+	result, err := r.db.ExecContext(ctx,
 		`UPDATE todos
 		 SET done = $1
 		 WHERE id = $2 AND owner_id = $3`,
@@ -84,8 +92,8 @@ func UpdateTodoDone(ctx context.Context, db *sql.DB, id, ownerID int64, done *bo
 	return nil
 }
 
-func DeleteTodo(ctx context.Context, db *sql.DB, id, ownerID int64) error {
-	result, err := db.ExecContext(ctx,
+func (r *TodoRepository) DeleteTodo(ctx context.Context, id, ownerID int64) error {
+	result, err := r.db.ExecContext(ctx,
 		`DELETE FROM todos
 		 WHERE id = $1 AND owner_id = $2`,
 		id, ownerID,

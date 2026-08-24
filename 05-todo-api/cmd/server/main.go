@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
+	"github.com/GenkiSugiyama/go-foundation-labs/05-todo-api/internal/todo/handler"
+	"github.com/GenkiSugiyama/go-foundation-labs/05-todo-api/internal/todo/repository"
 	_ "github.com/lib/pq"
 )
 
@@ -27,4 +30,23 @@ func main() {
 	}
 
 	log.Println("connected to postgres")
+
+	todoRepository := repository.New(db)
+	todoHandler := handler.New(todoRepository)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /todos", todoHandler.Create)
+	mux.HandleFunc("GET /todos", todoHandler.List)
+	mux.HandleFunc("PATCH /todos/{id}", todoHandler.Update)
+	mux.HandleFunc("DELETE /todos/{id}", todoHandler.Delete)
+
+	server := &http.Server{
+		Addr:              ":8080",
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	log.Println("listening on http://localhost:8080")
+	log.Fatal(server.ListenAndServe())
+
 }
