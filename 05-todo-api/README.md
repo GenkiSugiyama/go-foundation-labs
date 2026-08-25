@@ -534,6 +534,76 @@ go test ./...
 go run ./cmd/server
 ```
 
+### CRUD を確認する
+
+サーバーを起動したターミナルはそのままにして、別のターミナルから次のコマンドを順番に実行します。すべての操作で同じ `owner_id=1` を使います。
+
+まず、TODOを作成します。
+
+```bash
+curl -i -X POST http://localhost:8080/todos \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"CRUD check","owner_id":1}'
+```
+
+`201 Created`と、作成されたTODOのIDが返ることを確認します。
+
+```json
+{"id":1}
+```
+
+以降のコマンドで同じTODOを指定できるよう、返されたIDを変数に設定します。次の`1`は、実際に返されたIDへ置き換えてください。
+
+```bash
+TODO_ID=1
+```
+
+作成したTODOを含む一覧を取得します。
+
+```bash
+curl -i "http://localhost:8080/todos?owner_id=1"
+```
+
+`200 OK`と、先ほど作成したTODOがレスポンスに含まれることを確認します。
+
+次に、作成したTODOの`done`を`true`へ更新します。
+
+```bash
+curl -i -X PATCH "http://localhost:8080/todos/${TODO_ID}" \
+  -H 'Content-Type: application/json' \
+  -d '{"done":true,"owner_id":1}'
+```
+
+`204 No Content`が返ることを確認します。もう一度一覧を取得し、対象のTODOが`done: true`になったことを確認します。
+
+```bash
+curl -i "http://localhost:8080/todos?owner_id=1"
+```
+
+対象のTODOを削除します。
+
+```bash
+curl -i -X DELETE \
+  "http://localhost:8080/todos/${TODO_ID}?owner_id=1"
+```
+
+`204 No Content`が返ることを確認します。削除済みの同じTODOをもう一度削除すると、対象が存在しないため`404 Not Found`になります。
+
+```bash
+curl -i -X DELETE \
+  "http://localhost:8080/todos/${TODO_ID}?owner_id=1"
+```
+
+```json
+{"error":"todo not found"}
+```
+
+最後に一覧を取得し、削除したTODOが含まれていないことを確認します。
+
+```bash
+curl -i "http://localhost:8080/todos?owner_id=1"
+```
+
 各リクエストでは `context.WithTimeout` でDB処理に期限を設け、クライアント入力をそのままSQL文字列へ連結しないでください。実装後、完成イメージの `curl` を上から順に実行し、HTTPレスポンスとDBの行が一致することを確認します。
 
 HTTPの解析、JSON、ステータスコードが曖昧な場合は、先に `02-http-mini-api` の該当Stepへ戻ります。この課題ではHTTPを作り直すことより、HTTP層と永続化層の境界を説明できることが重要です。

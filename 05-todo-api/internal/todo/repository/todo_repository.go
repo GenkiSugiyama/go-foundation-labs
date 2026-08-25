@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"time"
 )
 
@@ -37,13 +38,15 @@ func (r *TodoRepository) CreateTodo(ctx context.Context, title string, ownerID i
 
 func (r *TodoRepository) ListTodos(ctx context.Context, ownerID int64) ([]Todo, error) {
 	// QueryContext はSELECTのようなクエリを実行し取得できた複数の行データを返す
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, title, done, owner_id, created_at
-		 FROM todos
-		 WHERE owner_id = $1
-		 ORDER BY id`,
-		ownerID,
-	)
+	// rows, err := r.db.QueryContext(ctx,
+	// 	`SELECT id, title, done, owner_id, created_at
+	// 	 FROM todos
+	// 	 WHERE owner_id = $1
+	// 	 ORDER BY id`,
+	// 	ownerID,
+	// )
+	query := "SELECT id, title, done, owner_id, created_at FROM todos WHERE owner_id = " + strconv.FormatInt(ownerID, 10) + " ORDER BY id"
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
