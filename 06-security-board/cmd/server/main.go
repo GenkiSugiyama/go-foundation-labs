@@ -23,10 +23,10 @@ type Session struct {
 }
 
 type Post struct {
-	ID       int64
-	AuthorID int64
-	Author   string
-	Body     template.HTML
+	ID          int64
+	AuthorID    int64
+	AuthorEmail string
+	Body        template.HTML
 }
 
 type PageData struct {
@@ -72,7 +72,7 @@ var boardPage = template.Must(template.New("board").Parse(`<!doctype html>
   <h2>投稿一覧</h2>
   {{range .Posts}}
     <article>
-      <p>#{{.ID}} by {{.Author}} / author ID: {{.AuthorID}}</p>
+      <p>#{{.ID}} by {{.AuthorEmail}} / author ID: {{.AuthorID}}</p>
       <div>{{.Body}}</div>
       <form method="post" action="/posts/delete">
         <input type="hidden" name="id" value="{{.ID}}">
@@ -210,7 +210,7 @@ func (app *application) listPosts(ctx context.Context) ([]Post, error) {
 	for rows.Next() {
 		var post Post
 		var body string
-		if err := rows.Scan(&post.AuthorID, &post.Author, &body); err != nil {
+		if err := rows.Scan(&post.ID, &post.AuthorID, &post.AuthorEmail, &body); err != nil {
 			return nil, err
 		}
 		post.Body = template.HTML(body)
