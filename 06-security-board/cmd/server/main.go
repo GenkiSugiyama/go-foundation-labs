@@ -15,6 +15,7 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Session struct {
@@ -26,7 +27,7 @@ type Post struct {
 	ID          int64
 	AuthorID    int64
 	AuthorEmail string
-	Body        template.HTML
+	Body        string
 }
 
 type PageData struct {
@@ -123,6 +124,8 @@ func main() {
 	log.Fatal(server.ListenAndServe())
 }
 
+// TODO: 登録機能がないので、登録時にパスワードをハッシュ化して保存する機能をつくる
+
 func (app *application) login(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -138,13 +141,7 @@ func (app *application) login(w http.ResponseWriter, r *http.Request) {
 		email := r.FormValue("email")
 		password := r.FormValue("password")
 
-		query := "SELECT id, email FROM users WHERE email = '" + email + "' AND password = '" + password + "'"
-
-		var current Session
-		if err := app.db.QueryRowContext(r.Context(), query).Scan(&current.UserID, &current.Email); err != nil {
-			http.Error(w, "invalid email or password", http.StatusUnauthorized)
-			return
-		}
+		current, err := app.authenticate(r.Context(), email, password)
 
 		token, err := randomToken()
 		if err != nil {
@@ -165,6 +162,26 @@ func (app *application) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 
 	}
+}
+
+func (app *application) authenticate(ctx context.Context, email, password string) (Session, error) {
+	var current Session
+	var passwordHash string
+	err := app.db.QueryRowContext(ctx,
+		`SELECT id, email, password_hash FROM users WHERE email = $1`,
+		email,
+	).Scan(&current.UserID, &current.Email, &passwordHash)
+	if err != nil {
+		return Session{}, err
+	}
+
+	if err := bcrypt.CompareHashAndPassword(
+		[]byte(passwordHash), []byte(password),
+	); err != nil {
+		return Session{}, err
+	}
+
+	return current, nil
 }
 
 func (app *application) home(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +230,6 @@ func (app *application) listPosts(ctx context.Context) ([]Post, error) {
 		if err := rows.Scan(&post.ID, &post.AuthorID, &post.AuthorEmail, &body); err != nil {
 			return nil, err
 		}
-		post.Body = template.HTML(body)
 		posts = append(posts, post)
 	}
 	return posts, rows.Err()
