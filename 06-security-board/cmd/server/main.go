@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"html/template"
@@ -19,8 +20,9 @@ import (
 )
 
 type Session struct {
-	UserID int64
-	Email  string
+	UserID    int64
+	Email     string
+	CSRFToken string
 }
 
 type Post struct {
@@ -62,12 +64,14 @@ var boardPage = template.Must(template.New("board").Parse(`<!doctype html>
   <p>login: {{.Current.Email}} / user ID: {{.Current.UserID}}</p>
   <form method="post" action="/logout">
     <button type="submit">logout</button>
+	<input type="hidden" name="csrf_token" value="{{.Current.CSRFToken}}">
   </form>
 
   <h2>新規投稿</h2>
   <form method="post" action="/posts">
     <textarea name="body" required></textarea>
     <button type="submit">post</button>
+	<input type="hidden" name="csrf_token" value="{{.Current.CSRFToken}}">
   </form>
 
   <h2>投稿一覧</h2>
@@ -78,6 +82,7 @@ var boardPage = template.Must(template.New("board").Parse(`<!doctype html>
       <form method="post" action="/posts/delete">
         <input type="hidden" name="id" value="{{.ID}}">
         <button type="submit">delete</button>
+		<input type="hidden" name="csrf_token" value="{{$.Current.CSRFToken}}">
       </form>
     </article>
   {{else}}
@@ -141,8 +146,18 @@ func (app *application) login(w http.ResponseWriter, r *http.Request) {
 		email := r.FormValue("email")
 		password := r.FormValue("password")
 
+		// 既存のDBのユーザー情報と照合して、認証に成功したらセッションを作成する
 		current, err := app.authenticate(r.Context(), email, password)
 
+		// 認証成功後にCSRFトークンを生成してセッションに保存する
+		csrfToken, err := randomToken()
+		if err != nil {
+			http.Error(w, "failed to create CSRF token", http.StatusInternalServerError)
+			return
+		}
+		current.CSRFToken = csrfToken
+
+		// randomToken()で生成したトークンをセッションIDとして、トークンをkeyとしたMapの値にSession構造体を保存する
 		token, err := randomToken()
 		if err != nil {
 			http.Error(w, "failed to create session", http.StatusInternalServerError)
@@ -152,6 +167,8 @@ func (app *application) login(w http.ResponseWriter, r *http.Request) {
 		app.sessions[token] = current
 		app.mu.Unlock()
 
+		// Cookieに"session"という名前でsessionIDを保存し、ブラウザに返す
+		// ブラウザはこのサイトにリクエストする際に、Cookieに保存されたsessionIDを送信する
 		http.SetCookie(w, &http.Cookie{
 			Name:  "session",
 			Value: token,
@@ -245,6 +262,10 @@ func (app *application) createPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "login required", http.StatusUnauthorized)
 		return
 	}
+	if !validCSRF(r, current) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
@@ -272,8 +293,14 @@ func (app *application) deletePost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if _, _, ok := app.currentSession(r); !ok {
+	_, current, ok := app.currentSession(r)
+	if !ok {
 		http.Error(w, "login required", http.StatusUnauthorized)
+		return
+	}
+	// セッションストアに存在するセッションであることが確認できたらセッション情報内のCSRFトークンとリクエストのフォームに含まれるCSRFトークンを比較して、同一であることを確認する
+	if !validCSRF(r, current) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -301,11 +328,15 @@ func (app *application) logout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	token, _, ok := app.currentSession(r)
+	token, current, ok := app.currentSession(r)
 	if ok {
 		app.mu.Lock()
 		delete(app.sessions, token)
 		app.mu.Unlock()
+	}
+	if !validCSRF(r, current) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:   "session",
@@ -315,12 +346,15 @@ func (app *application) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
+// リクエストからセッション情報を取得してセッションストアに存在するかを確認する
 func (app *application) currentSession(r *http.Request) (string, Session, bool) {
+	// ブラウザから送られたCookie情報から"session"という名前の情報を取得する
 	cookie, err := r.Cookie("session")
 	if err != nil {
 		return "", Session{}, false
 	}
 	app.mu.RLock()
+	// cokkie.Valueをキーとしたセッション情報が存在するかを確認した結果を返す
 	current, ok := app.sessions[cookie.Value]
 	app.mu.RUnlock()
 	return cookie.Value, current, ok
@@ -332,4 +366,13 @@ func randomToken() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// 投稿フォームや削除フォーム、ログアウトフォームから送信されるCSRFトークンとサーバーで管理しているセッション情報に保存されているトークンが一致するかを確認する
+func validCSRF(r *http.Request, current Session) bool {
+	if err := r.ParseForm(); err != nil {
+		return false
+	}
+	provided := r.FormValue("csrf_token")
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(current.CSRFToken)) == 1
 }
