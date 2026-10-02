@@ -148,6 +148,10 @@ func (app *application) login(w http.ResponseWriter, r *http.Request) {
 
 		// 既存のDBのユーザー情報と照合して、認証に成功したらセッションを作成する
 		current, err := app.authenticate(r.Context(), email, password)
+		if err != nil {
+			http.Error(w, "invalid email or password", http.StatusUnauthorized)
+			return
+		}
 
 		// 認証成功後にCSRFトークンを生成してセッションに保存する
 		csrfToken, err := randomToken()
@@ -329,15 +333,19 @@ func (app *application) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token, current, ok := app.currentSession(r)
-	if ok {
-		app.mu.Lock()
-		delete(app.sessions, token)
-		app.mu.Unlock()
+	if !ok {
+		http.Error(w, "login required", http.StatusUnauthorized)
+		return
 	}
+	// CSRF検証は状態変更前に行う必要があるのでCSRF検証後に問題なければセッション削除する
 	if !validCSRF(r, current) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
+	app.mu.Lock()
+	delete(app.sessions, token)
+	app.mu.Unlock()
+
 	http.SetCookie(w, &http.Cookie{
 		Name:   "session",
 		Path:   "/",
