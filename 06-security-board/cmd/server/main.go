@@ -19,6 +19,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// ローカルのサンプル実装なのでHTTPSは使わない
+const useHTTPS = false
+
 type Session struct {
 	UserID    int64
 	Email     string
@@ -174,9 +177,12 @@ func (app *application) login(w http.ResponseWriter, r *http.Request) {
 		// Cookieに"session"という名前でsessionIDを保存し、ブラウザに返す
 		// ブラウザはこのサイトにリクエストする際に、Cookieに保存されたsessionIDを送信する
 		http.SetCookie(w, &http.Cookie{
-			Name:  "session",
-			Value: token,
-			Path:  "/",
+			Name:     "session",
+			Value:    token,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+			Secure:   useHTTPS,
 		})
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	default:
@@ -317,11 +323,22 @@ func (app *application) deletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := app.db.ExecContext(r.Context(),
-		`DELETE FROM posts WHERE id = $1`, postID,
-	); err != nil {
-		log.Printf("delete post: %v", err)
+	result, err := app.db.ExecContext(r.Context(),
+		`DELETE FROM posts WHERE id = $1 AND author_id = $2`,
+		postID, current.UserID,
+	)
+	if err != nil {
+		log.Printf("failed to delete post: %v", err)
 		http.Error(w, "failed to delete post", http.StatusInternalServerError)
+		return
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		http.Error(w, "failed to check result", http.StatusInternalServerError)
+		return
+	}
+	if affected == 0 {
+		http.Error(w, "post not found", http.StatusNotFound)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
